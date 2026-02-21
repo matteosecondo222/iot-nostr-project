@@ -1,0 +1,4 @@
+bin/
+obj/
+.env
+relay_db/

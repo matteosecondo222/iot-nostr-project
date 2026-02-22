@@ -1,6 +1,7 @@
 using DotNetEnv;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -13,7 +14,6 @@ using System.Windows.Forms;
 using ScottPlot;
 using ScottPlot.WinForms;
 
-// --- IMPORT NECESSARI PER LA CRITTOGRAFIA NIP-04 ---
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto.Agreement;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -33,25 +33,22 @@ namespace NostrClient
         public bool IsReceivingHistory { get; set; } = true;
         
         public List<(DateTime Time, string Message)> HistoricalLogs { get; set; } = new();
-        
-        // MIGLIORIA: Ora DisplayLogs ha il timestamp incorporato per essere ordinato cronologicamente!
         public List<(DateTime Time, string Message)> DisplayLogs { get; set; } = new();
         
-        public List<(double Time, double Temp)> DataPoints { get; set; } = new();
+        public List<(double Time, double Value)> DataPoints { get; set; } = new();
 
         public override string ToString()
         {
             if (SensorId == "In attesa di dati...")
                 return $"[{PubKey.Substring(0, 8)}...] In attesa...";
             
-            return SensorId; 
+            return $"{SensorId} ({SensorType})"; 
         }
     }
 
     public partial class Form1 : Form
     {
         private readonly string dashboardPrivKeyHex; 
-
         private readonly string[] relayUrls = { "wss://relay.damus.io", "ws://localhost:3334" };
         
         private List<ClientWebSocket> activeWebSockets = new List<ClientWebSocket>();
@@ -67,8 +64,15 @@ namespace NostrClient
         private Panel? pnlLogHeader;
         private ComboBox? cmbLogSelector;
 
+        // Filtro di categoria nel pannello di destra
+        private ComboBox? cmbCategoryFilter;
+        private HashSet<string> knownCategories = new HashSet<string>();
+
         private Dictionary<string, SensorData> sensors = new Dictionary<string, SensorData>();
+        private BindingList<SensorData> visibleSensors = new BindingList<SensorData>();
+
         private string currentSelectedPubKey = "";
+        private string currentCategoryFilter = "";
 
         public Form1()
         {
@@ -89,8 +93,8 @@ namespace NostrClient
 
         private void SetupUI()
         {
-            this.Text = "Hub Sensori IoT (Multi-Relay Criptato NIP-04)";
-            this.Width = 1000;
+            this.Text = "Hub Sensori IoT Decentralizzato";
+            this.Width = 1050;
             this.Height = 800; 
 
             SplitContainer mainSplit = new SplitContainer
@@ -101,11 +105,6 @@ namespace NostrClient
             };
 
             formsPlot = new FormsPlot { Dock = DockStyle.Fill };
-            formsPlot.Plot.Title("Confronto Sensori IoT (Dati Decriptati)");
-            formsPlot.Plot.Axes.Left.Label.Text = "Temperatura (°C)";
-            formsPlot.Plot.Axes.Bottom.Label.Text = "Orario";
-            formsPlot.Plot.Axes.DateTimeTicksBottom();
-            
             mainSplit.Panel1.Controls.Add(formsPlot);
 
             SplitContainer bottomSplit = new SplitContainer
@@ -148,11 +147,16 @@ namespace NostrClient
 
             System.Windows.Forms.Label lblList = new System.Windows.Forms.Label { Text = "Sensori Monitorati:", Dock = DockStyle.Top, Height = 25 };
             
+            cmbCategoryFilter = new ComboBox { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 0, 0, 5) };
+            cmbCategoryFilter.SelectedIndexChanged += CmbCategoryFilter_SelectedIndexChanged;
+
             chkSensors = new CheckedListBox 
             { 
                 Dock = DockStyle.Fill, 
                 CheckOnClick = true 
             };
+
+            ((ListBox)chkSensors).DataSource = visibleSensors;
 
             Button btnShowDetails = new Button { 
                 Text = "Mostra Dettagli Sensori", 
@@ -167,6 +171,7 @@ namespace NostrClient
             chkSensors.ItemCheck += ChkSensors_ItemCheck;
 
             rightPanel.Controls.Add(chkSensors);
+            rightPanel.Controls.Add(cmbCategoryFilter); 
             rightPanel.Controls.Add(lblList);
             rightPanel.Controls.Add(btnAddSensor);
             rightPanel.Controls.Add(txtNewSensorKey);
@@ -177,6 +182,8 @@ namespace NostrClient
             mainSplit.Panel2.Controls.Add(bottomSplit);
 
             this.Controls.Add(mainSplit);
+            
+            RefreshUI();
         }
 
         private async void BtnAddSensor_Click(object? sender, EventArgs e)
@@ -195,16 +202,21 @@ namespace NostrClient
                 return;
             }
 
-            sensors[newKey] = new SensorData { PubKey = newKey };
-            chkSensors?.Items.Add(sensors[newKey]);
+            var newSensor = new SensorData { PubKey = newKey };
+            sensors[newKey] = newSensor;
+            
+            if (string.IsNullOrEmpty(currentCategoryFilter)) 
+            {
+                visibleSensors.Add(newSensor);
+                int newIndex = chkSensors!.Items.Count - 1;
+                chkSensors.SelectedIndex = newIndex;
+                chkSensors.SetItemChecked(newIndex, true);
+            }
+            
             txtNewSensorKey!.Text = "";
-
-            int newIndex = chkSensors!.Items.Count - 1;
-            chkSensors.SelectedIndex = newIndex;
-            chkSensors.SetItemChecked(newIndex, true);
             currentSelectedPubKey = newKey; 
 
-            string reqMessage = $@"[""REQ"", ""sub-{newKey}"", {{""authors"": [""{newKey}""], ""kinds"": [4]}}]";
+            string reqMessage = $@"[""REQ"", ""sub-{newKey}"", {{""authors"": [""{newKey}""], ""kinds"": [4, 10000]}}]";
             var bytes = Encoding.UTF8.GetBytes(reqMessage);
 
             foreach (var ws in activeWebSockets)
@@ -215,9 +227,45 @@ namespace NostrClient
                 }
             }
             
-            // AGGIORNATO: Aggiungiamo il timestamp fittizio per il log di sistema
-            sensors[newKey].DisplayLogs.Add((DateTime.Now, $"[SISTEMA] Sottoscrizione inviata per il sensore {newKey.Substring(0,8)} su tutti i relay..."));
+            sensors[newKey].DisplayLogs.Add((DateTime.Now, $"[SISTEMA] In attesa di scoprire il tipo di sensore per {newKey.Substring(0,8)}..."));
             RefreshUI();
+        }
+
+        private void CmbCategoryFilter_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (cmbCategoryFilter?.SelectedItem == null) return;
+            
+            currentCategoryFilter = cmbCategoryFilter.SelectedItem.ToString() ?? "";
+            
+            UpdateVisibleSensorsList();
+            RefreshUI();
+        }
+
+        private void UpdateVisibleSensorsList()
+        {
+            var checkedPubKeys = new HashSet<string>();
+            foreach (SensorData item in chkSensors!.CheckedItems)
+            {
+                checkedPubKeys.Add(item.PubKey);
+            }
+
+            visibleSensors.Clear();
+
+            foreach (var kvp in sensors)
+            {
+                if (kvp.Value.SensorType == currentCategoryFilter || kvp.Value.SensorType == "Sconosciuto")
+                {
+                    visibleSensors.Add(kvp.Value);
+                }
+            }
+
+            for (int i = 0; i < chkSensors.Items.Count; i++)
+            {
+                if (chkSensors.Items[i] is SensorData sd && checkedPubKeys.Contains(sd.PubKey))
+                {
+                    chkSensors.SetItemChecked(i, true);
+                }
+            }
         }
 
         private void BtnShowDetails_Click(object? sender, EventArgs e)
@@ -343,7 +391,22 @@ namespace NostrClient
             if (formsPlot != null && chkSensors != null)
             {
                 formsPlot.Plot.Clear();
-                formsPlot.Plot.Title("Confronto Sensori IoT (Dati Decriptati)");
+                
+                if (currentCategoryFilter == "temperatura")
+                {
+                    formsPlot.Plot.Title("Sensori di Temperatura (°C)");
+                    formsPlot.Plot.Axes.Left.Label.Text = "Temperatura (°C)";
+                }
+                else if (currentCategoryFilter == "pm10")
+                {
+                    formsPlot.Plot.Title("Qualità dell'Aria (PM10)");
+                    formsPlot.Plot.Axes.Left.Label.Text = "Concentrazione (µg/m³)";
+                }
+                else
+                {
+                    formsPlot.Plot.Title("In attesa di dati sensore...");
+                    formsPlot.Plot.Axes.Left.Label.Text = "Valore";
+                }
 
                 var palette = new[] { Colors.Red, Colors.Blue, Colors.Green, Colors.Orange, Colors.Purple, Colors.Teal };
                 int colorIndex = 0;
@@ -353,16 +416,20 @@ namespace NostrClient
                     if (item is SensorData sensor && sensor.DataPoints.Count > 0)
                     {
                         double[] sortedTimes = new double[sensor.DataPoints.Count];
-                        double[] sortedTemps = new double[sensor.DataPoints.Count];
+                        double[] sortedVals = new double[sensor.DataPoints.Count];
                         for (int i = 0; i < sensor.DataPoints.Count; i++)
                         {
                             sortedTimes[i] = sensor.DataPoints[i].Time;
-                            sortedTemps[i] = sensor.DataPoints[i].Temp;
+                            sortedVals[i] = sensor.DataPoints[i].Value;
                         }
 
-                        var scatter = formsPlot.Plot.Add.Scatter(sortedTimes, sortedTemps);
+                        var scatter = formsPlot.Plot.Add.Scatter(sortedTimes, sortedVals);
                         scatter.Color = palette[colorIndex % palette.Length];
                         scatter.LineWidth = 2;
+                        
+                        // AGGIORNAMENTO: Assicura che un singolo punto isolato (come per il Kind 10000) sia visibile!
+                        scatter.MarkerSize = 7; 
+                        
                         scatter.Label = sensor.SensorId; 
                         
                         colorIndex++;
@@ -379,12 +446,11 @@ namespace NostrClient
             {
                 if (chkSensors.CheckedItems.Count == 0)
                 {
-                    txtLog.Text = "Nessun sensore spuntato. Accendi un sensore dalla lista per visualizzarne i log e il grafico.";
+                    txtLog.Text = "Nessun sensore spuntato nella categoria corrente.";
                 }
                 else if (!string.IsNullOrEmpty(currentSelectedPubKey) && sensors.ContainsKey(currentSelectedPubKey))
                 {
                     var activeSensor = sensors[currentSelectedPubKey];
-                    // AGGIORNATO: Estraiamo solo i testi dal nostro nuovo DisplayLogs formattato a tuple
                     txtLog.Text = string.Join(Environment.NewLine, activeSensor.DisplayLogs.Select(x => x.Message)) + Environment.NewLine;
                     txtLog.SelectionStart = txtLog.Text.Length;
                     txtLog.ScrollToCaret();
@@ -409,7 +475,7 @@ namespace NostrClient
                 
                 foreach (var pubKey in sensors.Keys)
                 {
-                    string reqMessage = $@"[""REQ"", ""sub-{pubKey}"", {{""authors"": [""{pubKey}""], ""kinds"": [4]}}]";
+                    string reqMessage = $@"[""REQ"", ""sub-{pubKey}"", {{""authors"": [""{pubKey}""], ""kinds"": [4, 10000]}}]";
                     var bytes = Encoding.UTF8.GetBytes(reqMessage);
                     await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
                 }
@@ -428,8 +494,6 @@ namespace NostrClient
                     if (result.MessageType == WebSocketMessageType.Close) break;
 
                     var jsonResponse = Encoding.UTF8.GetString(ms.ToArray());
-                    
-                    // AGGIORNATO: Passiamo l'URL alla funzione per identificare il relay!
                     ProcessNostrMessage(jsonResponse, url);
                 }
             }
@@ -492,12 +556,10 @@ namespace NostrClient
             }
         }
 
-        // AGGIORNATO: Ora riceve string relayUrl come parametro
         private void ProcessNostrMessage(string json, string relayUrl)
         {
             try
             {
-                // Estraiamo il nome del Relay (es. "relay.damus.io") dall'URL
                 string relayName = new Uri(relayUrl).Host;
 
                 using var doc = JsonDocument.Parse(json);
@@ -523,8 +585,26 @@ namespace NostrClient
 
                         var sensor = sensors[pubKey];
                         
+                        int kind = nostrEvent.GetProperty("kind").GetInt32();
                         var rawContent = nostrEvent.GetProperty("content").GetString() ?? "";
-                        var content = DecryptNip04(rawContent, pubKey);
+                        
+                        string content = "";
+                        string logIcon = "";
+                        
+                        if (kind == 4) 
+                        {
+                            content = DecryptNip04(rawContent, pubKey);
+                            logIcon = "🔒";
+                        }
+                        else if (kind == 10000)
+                        {
+                            content = rawContent;
+                            logIcon = "🌍";
+                        }
+                        else
+                        {
+                            return; 
+                        }
 
                         if (content.StartsWith("[Errore") || string.IsNullOrEmpty(content)) return;
 
@@ -534,6 +614,8 @@ namespace NostrClient
                         sensor.MessageCount++; 
 
                         bool needsListRefresh = false;
+                        bool isNewCategoryFound = false; 
+
                         var tagsArray = nostrEvent.GetProperty("tags");
                         foreach (var tag in tagsArray.EnumerateArray())
                         {
@@ -547,9 +629,17 @@ namespace NostrClient
                                     sensor.SensorId = tagValue;
                                     needsListRefresh = true; 
                                 }
-                                if (tagName == "t" && sensor.SensorType != tagValue)
+                                
+                                if (tagName == "t" && tagValue != "air_quality" && sensor.SensorType != tagValue)
                                 {
                                     sensor.SensorType = tagValue;
+                                    needsListRefresh = true;
+                                    
+                                    if (!knownCategories.Contains(tagValue))
+                                    {
+                                        knownCategories.Add(tagValue);
+                                        isNewCategoryFound = true;
+                                    }
                                 }
                             }
                         }
@@ -557,14 +647,24 @@ namespace NostrClient
                         if (needsListRefresh)
                         {
                             Invoke((MethodInvoker)delegate {
-                                int index = chkSensors!.Items.IndexOf(sensor);
-                                if (index >= 0)
+                                if (isNewCategoryFound && cmbCategoryFilter != null)
                                 {
-                                    bool wasSelected = chkSensors.SelectedIndex == index;
-                                    chkSensors.Items[index] = chkSensors.Items[index]; 
-                                    if (wasSelected) chkSensors.SelectedIndex = index;
+                                    cmbCategoryFilter.Items.Clear();
+                                    foreach(var cat in knownCategories)
+                                    {
+                                        cmbCategoryFilter.Items.Add(cat);
+                                    }
+                                    
+                                    if (string.IsNullOrEmpty(currentCategoryFilter))
+                                    {
+                                        currentCategoryFilter = sensor.SensorType;
+                                    }
+                                    cmbCategoryFilter.SelectedItem = currentCategoryFilter;
                                 }
-                                
+
+                                UpdateVisibleSensorsList();
+                                chkSensors!.Invalidate();
+
                                 if (cmbLogSelector != null)
                                 {
                                     int cmbIndex = cmbLogSelector.Items.IndexOf(sensor);
@@ -576,8 +676,12 @@ namespace NostrClient
                             });
                         }
 
-                        // AGGIORNATO: Aggiungiamo [RelayName] all'inizio del log testuale!
-                        string logLine = $"[{relayName}] [{timestamp:dd/MM/yyyy HH:mm:ss}] 🔒 {content}°C";
+                        string logLine = "";
+                        if (kind == 4) {
+                            logLine = $"[{relayName}] [{timestamp:dd/MM/yyyy HH:mm:ss}] {logIcon} {content}°C";
+                        } else {
+                            logLine = $"[{relayName}] [{timestamp:dd/MM/yyyy HH:mm:ss}] {logIcon} {content}";
+                        }
 
                         if (sensor.IsReceivingHistory)
                         {
@@ -585,12 +689,44 @@ namespace NostrClient
                         }
                         else
                         {
-                            // Aggiungiamo il nuovo messaggio e RIO-ORDINIAMO in tempo reale per timestamp
                             sensor.DisplayLogs.Add((timestamp.LocalDateTime, logLine));
                             sensor.DisplayLogs.Sort((a, b) => a.Time.CompareTo(b.Time));
                             
                             if (sensor.DisplayLogs.Count > 100) sensor.DisplayLogs.RemoveAt(0);
+                        }
 
+                        // AGGIORNATO: Salvataggio dati PRIMA di chiamare il RefreshUI
+                        if (!string.IsNullOrEmpty(content))
+                        {
+                            if (sensor.SensorType == "temperatura")
+                            {
+                                string tempStr = content.Replace("Lettura Sensore: ", "").Replace(" °C", "").Trim();
+                                if (double.TryParse(tempStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double tempValue))
+                                {
+                                    sensor.DataPoints.Add((timestamp.LocalDateTime.ToOADate(), tempValue));
+                                }
+                            }
+                            else if (sensor.SensorType == "pm10")
+                            {
+                                try
+                                {
+                                    var pm10Json = JsonDocument.Parse(content).RootElement;
+                                    if (pm10Json.TryGetProperty("pm10", out var pm10Elem))
+                                    {
+                                        double pm10Value = pm10Elem.GetDouble();
+                                        sensor.DataPoints.Add((timestamp.LocalDateTime.ToOADate(), pm10Value));
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            if (sensor.DataPoints.Count > 500) sensor.DataPoints.RemoveAt(0);
+                            sensor.DataPoints.Sort((a, b) => a.Time.CompareTo(b.Time));
+                        }
+
+                        // AGGIORNATO: Refresh spostato alla fine (Risolto il ritardo visivo)
+                        if (!sensor.IsReceivingHistory)
+                        {
                             Invoke(new Action(() => 
                             {
                                 bool isChecked = chkSensors != null && chkSensors.CheckedItems.Contains(sensor);
@@ -600,17 +736,6 @@ namespace NostrClient
                                     RefreshUI();
                                 }
                             }));
-                        }
-
-                        if (!string.IsNullOrEmpty(content))
-                        {
-                            string tempStr = content.Replace("Lettura Sensore: ", "").Replace(" °C", "").Trim();
-                            if (double.TryParse(tempStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double tempValue))
-                            {
-                                sensor.DataPoints.Add((timestamp.LocalDateTime.ToOADate(), tempValue));
-                                if (sensor.DataPoints.Count > 500) sensor.DataPoints.RemoveAt(0);
-                                sensor.DataPoints.Sort((a, b) => a.Time.CompareTo(b.Time));
-                            }
                         }
                     }
                     else if (messageType == "EOSE")
@@ -624,17 +749,13 @@ namespace NostrClient
                                 var sensor = sensors[pubKey];
                                 sensor.IsReceivingHistory = false;
 
-                                // Trasferiamo i log storici nel contenitore visuale
                                 foreach (var log in sensor.HistoricalLogs)
                                 {
                                     sensor.DisplayLogs.Add(log);
                                 }
                                 sensor.HistoricalLogs.Clear();
                                 
-                                // AGGIORNATO: Inseriamo il messaggio di sistema differenziato per relay
                                 sensor.DisplayLogs.Add((DateTime.Now, $"[SISTEMA] --- Storico da [{relayName}] completato ---"));
-
-                                // RIO-ORDINIAMO TUTTO il blocco di messaggi in base all'orario in cui sono successi
                                 sensor.DisplayLogs.Sort((a, b) => a.Time.CompareTo(b.Time));
 
                                 while (sensor.DisplayLogs.Count > 100)
@@ -658,7 +779,7 @@ namespace NostrClient
             }
             catch
             {
-                // Ignora pacchetti malformati
+                // Ignora
             }
         }
 

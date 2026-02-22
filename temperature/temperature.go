@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
+	"strconv" // IMPORTANTE: Aggiunto per convertire l'int64 in stringa
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 const numeroSensori = 3
 
+// ... (La funzione getOrGenerateKeys rimane invariata) ...
 func getOrGenerateKeys(sensorName string) (string, string) {
 	_ = godotenv.Load(".env")
 
@@ -53,6 +55,12 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 
 	sensorTagId := fmt.Sprintf("sim-go-%02d", idSensore)
 
+	// ==========================================================
+	// ⚙️ CONFIGURAZIONE NIP-40 (Scadenza Dati)
+	// Definiamo quanto tempo i dati devono rimanere validi sui relay
+	// ==========================================================
+	durataValiditaDati := 24 * time.Hour // Esempio: i dati scadono dopo 24 ore
+
 	sharedSecret, err := nip04.ComputeSharedSecret(dashboardPubKey, privKey)
 	if err != nil {
 		log.Printf("❌ [%s] Errore calcolo segreto condiviso ECDH: %v", sensorTagId, err)
@@ -61,9 +69,6 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 
 	ctx := context.Background()
 
-	// ==========================================================
-	// MULTI-RELAY: I sensori ora scrivono su più hub!
-	// ==========================================================
 	relayURLs := []string{"wss://relay.damus.io", "ws://localhost:3334"}
 	var activeRelays []*nostr.Relay
 
@@ -71,13 +76,12 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
 			log.Printf("⚠️ [%s] Impossibile connettersi a %s: %v", sensorTagId, url, err)
-			continue // Passa al prossimo relay se questo fallisce
+			continue
 		}
 		activeRelays = append(activeRelays, relay)
 		fmt.Printf("📡 [%s] Connesso a %s!\n", sensorTagId, url)
 	}
 
-	// Chiudiamo tutte le connessioni aperte alla fine
 	defer func() {
 		for _, r := range activeRelays {
 			r.Close()
@@ -98,6 +102,12 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			continue
 		}
 
+		// ==========================================================
+		// ⏰ CALCOLO TIMESTAMP DI SCADENZA (NIP-40)
+		// ==========================================================
+		expirationTime := time.Now().Add(durataValiditaDati).Unix()
+		expirationString := strconv.FormatInt(expirationTime, 10)
+
 		ev := nostr.Event{
 			PubKey:    pubKey,
 			CreatedAt: nostr.Now(),
@@ -106,6 +116,8 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 				nostr.Tag{"p", dashboardPubKey},
 				nostr.Tag{"t", "temperatura"},
 				nostr.Tag{"sensor_id", sensorTagId},
+				// Aggiungiamo il tag di scadenza richiesto dal protocollo
+				nostr.Tag{"expiration", expirationString}, 
 			},
 			Content: messaggioCriptato,
 		}
@@ -114,18 +126,28 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			continue
 		}
 
-		// Pubblichiamo l'evento su TUTTI i relay attivi
+		// Variabile per tenere traccia dei log puliti
+		pubblicazioniRiuscite := 0
+
 		for _, r := range activeRelays {
 			if err := r.Publish(ctx, ev); err != nil {
 				log.Printf("⚠️ [%s] Errore invio su %s: %v", sensorTagId, r.URL, err)
 				continue
 			}
-			fmt.Printf("🔒 [%s] Criptato e Pubblicato su %d relay: %.2f °C\n", sensorTagId, len(activeRelays), temperatura)
+			pubblicazioniRiuscite++
 		}
-
+		
+		if pubblicazioniRiuscite > 0 {
+			fmt.Printf("🔒 [%s] Criptato e Pubblicato su %d relay (Scade il: %s) --> %.2f °C\n", 
+				sensorTagId, 
+				pubblicazioniRiuscite,
+				time.Unix(expirationTime, 0).Format("02/01 15:04"), // Formatto per comodità di lettura nei log
+				temperatura)
+		}
 	}
 }
 
+// ... (La funzione main rimane invariata) ...
 func main() {
 	_ = godotenv.Load(".env")
 

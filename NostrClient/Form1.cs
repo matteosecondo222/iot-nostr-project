@@ -31,8 +31,12 @@ namespace NostrClient
         public int MessageCount { get; set; } = 0;
 
         public bool IsReceivingHistory { get; set; } = true;
+        
         public List<(DateTime Time, string Message)> HistoricalLogs { get; set; } = new();
-        public List<string> DisplayLogs { get; set; } = new();
+        
+        // MIGLIORIA: Ora DisplayLogs ha il timestamp incorporato per essere ordinato cronologicamente!
+        public List<(DateTime Time, string Message)> DisplayLogs { get; set; } = new();
+        
         public List<(double Time, double Temp)> DataPoints { get; set; } = new();
 
         public override string ToString()
@@ -60,7 +64,6 @@ namespace NostrClient
         private TextBox? txtNewSensorKey;
         private Button? btnAddSensor;
         
-        // Nuovi controlli per la barra superiore dei log
         private Panel? pnlLogHeader;
         private ComboBox? cmbLogSelector;
 
@@ -112,9 +115,6 @@ namespace NostrClient
                 SplitterDistance = 650 
             };
 
-            // ==========================================
-            // NUOVA BARRA LOG (Miglioria 2)
-            // ==========================================
             pnlLogHeader = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = System.Drawing.Color.FromArgb(40, 40, 40), Visible = false };
             System.Windows.Forms.Label lblSelectLog = new System.Windows.Forms.Label { Text = "Mostra log del sensore:", Dock = DockStyle.Left, Width = 150, TextAlign = System.Drawing.ContentAlignment.MiddleLeft, ForeColor = System.Drawing.Color.White };
             cmbLogSelector = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -136,11 +136,8 @@ namespace NostrClient
             
             bottomSplit.Panel1.Controls.Add(txtLog);
             bottomSplit.Panel1.Controls.Add(pnlLogHeader);
-            txtLog.BringToFront(); // Assicura che la textbox riempia lo spazio restante sotto la barra
+            txtLog.BringToFront();
 
-            // ==========================================
-            // PANNELLO CONTROLLI DESTRO
-            // ==========================================
             Panel rightPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
             
             System.Windows.Forms.Label lblInput = new System.Windows.Forms.Label { Text = "Aggiungi PubKey Sensore:", Dock = DockStyle.Top, Height = 25 };
@@ -218,7 +215,8 @@ namespace NostrClient
                 }
             }
             
-            sensors[newKey].DisplayLogs.Add($"[SISTEMA] Sottoscrizione inviata per il sensore {newKey.Substring(0,8)} su tutti i relay...");
+            // AGGIORNATO: Aggiungiamo il timestamp fittizio per il log di sistema
+            sensors[newKey].DisplayLogs.Add((DateTime.Now, $"[SISTEMA] Sottoscrizione inviata per il sensore {newKey.Substring(0,8)} su tutti i relay..."));
             RefreshUI();
         }
 
@@ -257,14 +255,11 @@ namespace NostrClient
             detailsForm.ShowDialog();
         }
 
-        // Gestisce la scelta dal menu a tendina sopra i log
         private void CmbLogSelector_SelectedIndexChanged(object? sender, EventArgs e)
         {
             if (cmbLogSelector?.SelectedItem is SensorData selectedSensor)
             {
                 currentSelectedPubKey = selectedSensor.PubKey;
-                
-                // Opzionale: Allinea anche la selezione blu nella lista a destra
                 if (chkSensors != null)
                 {
                     int index = chkSensors.Items.IndexOf(selectedSensor);
@@ -277,17 +272,13 @@ namespace NostrClient
             }
         }
 
-        // Se clicchi sulla lista di destra (ma senza cambiare la spunta)
         private void ChkSensors_SelectedIndexChanged(object? sender, EventArgs e)
         {
             if (chkSensors?.SelectedItem is SensorData selectedSensor)
             {
-                // Mostra il log solo se l'elemento è effettivamente spuntato (attivo)
                 if (chkSensors.CheckedItems.Contains(selectedSensor))
                 {
                     currentSelectedPubKey = selectedSensor.PubKey;
-                    
-                    // Allinea il menu a tendina
                     if (cmbLogSelector != null && cmbLogSelector.SelectedItem != selectedSensor)
                     {
                         cmbLogSelector.SelectedItem = selectedSensor;
@@ -297,17 +288,14 @@ namespace NostrClient
             }
         }
 
-        // Miglioria 1: Gestione unificata click/spunta e Miglioria 2: popolamento barra
         private void ChkSensors_ItemCheck(object? sender, ItemCheckEventArgs e)
         {
             BeginInvoke(new Action(() => 
             {
-                // Se l'utente ha "spento" un sensore, rimuoviamo l'evidenziazione blu!
                 if (e.NewValue == CheckState.Unchecked && chkSensors?.SelectedIndex == e.Index)
                 {
                     chkSensors.ClearSelected();
                 }
-                // Se l'utente ha "acceso" un sensore, assicuriamoci che sia selezionato
                 else if (e.NewValue == CheckState.Checked && chkSensors != null)
                 {
                     chkSensors.SelectedIndex = e.Index;
@@ -318,7 +306,6 @@ namespace NostrClient
             }));
         }
     
-        // Aggiorna la barra a tendina sopra i log
         private void UpdateLogSelectorBar()
         {
             if (cmbLogSelector == null || chkSensors == null || pnlLogHeader == null) return;
@@ -333,9 +320,7 @@ namespace NostrClient
 
             if (cmbLogSelector.Items.Count > 0)
             {
-                pnlLogHeader.Visible = true; // Mostra la barra
-                
-                // Prova a mantenere il log selezionato prima, altrimenti prendi il primo della lista
+                pnlLogHeader.Visible = true; 
                 var itemToSelect = cmbLogSelector.Items.Cast<SensorData>().FirstOrDefault(s => s.PubKey == prevPubKey);
                 if (itemToSelect != null)
                 {
@@ -348,7 +333,6 @@ namespace NostrClient
             }
             else
             {
-                // Nessun sensore attivo: nascondi la barra e pulisci i log
                 pnlLogHeader.Visible = false;
                 currentSelectedPubKey = "";
             }
@@ -400,7 +384,8 @@ namespace NostrClient
                 else if (!string.IsNullOrEmpty(currentSelectedPubKey) && sensors.ContainsKey(currentSelectedPubKey))
                 {
                     var activeSensor = sensors[currentSelectedPubKey];
-                    txtLog.Text = string.Join(Environment.NewLine, activeSensor.DisplayLogs) + Environment.NewLine;
+                    // AGGIORNATO: Estraiamo solo i testi dal nostro nuovo DisplayLogs formattato a tuple
+                    txtLog.Text = string.Join(Environment.NewLine, activeSensor.DisplayLogs.Select(x => x.Message)) + Environment.NewLine;
                     txtLog.SelectionStart = txtLog.Text.Length;
                     txtLog.ScrollToCaret();
                 }
@@ -443,7 +428,9 @@ namespace NostrClient
                     if (result.MessageType == WebSocketMessageType.Close) break;
 
                     var jsonResponse = Encoding.UTF8.GetString(ms.ToArray());
-                    ProcessNostrMessage(jsonResponse);
+                    
+                    // AGGIORNATO: Passiamo l'URL alla funzione per identificare il relay!
+                    ProcessNostrMessage(jsonResponse, url);
                 }
             }
             catch (Exception ex)
@@ -505,10 +492,14 @@ namespace NostrClient
             }
         }
 
-        private void ProcessNostrMessage(string json)
+        // AGGIORNATO: Ora riceve string relayUrl come parametro
+        private void ProcessNostrMessage(string json, string relayUrl)
         {
             try
             {
+                // Estraiamo il nome del Relay (es. "relay.damus.io") dall'URL
+                string relayName = new Uri(relayUrl).Host;
+
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
 
@@ -574,7 +565,6 @@ namespace NostrClient
                                     if (wasSelected) chkSensors.SelectedIndex = index;
                                 }
                                 
-                                // Aggiorniamo anche la voce nel menu a tendina se è cambiato l'ID
                                 if (cmbLogSelector != null)
                                 {
                                     int cmbIndex = cmbLogSelector.Items.IndexOf(sensor);
@@ -586,7 +576,8 @@ namespace NostrClient
                             });
                         }
 
-                        string logLine = $"[{timestamp:dd/MM/yyyy HH:mm:ss}] 🔒 {content}°C";
+                        // AGGIORNATO: Aggiungiamo [RelayName] all'inizio del log testuale!
+                        string logLine = $"[{relayName}] [{timestamp:dd/MM/yyyy HH:mm:ss}] 🔒 {content}°C";
 
                         if (sensor.IsReceivingHistory)
                         {
@@ -594,7 +585,10 @@ namespace NostrClient
                         }
                         else
                         {
-                            sensor.DisplayLogs.Add(logLine);
+                            // Aggiungiamo il nuovo messaggio e RIO-ORDINIAMO in tempo reale per timestamp
+                            sensor.DisplayLogs.Add((timestamp.LocalDateTime, logLine));
+                            sensor.DisplayLogs.Sort((a, b) => a.Time.CompareTo(b.Time));
+                            
                             if (sensor.DisplayLogs.Count > 100) sensor.DisplayLogs.RemoveAt(0);
 
                             Invoke(new Action(() => 
@@ -630,13 +624,18 @@ namespace NostrClient
                                 var sensor = sensors[pubKey];
                                 sensor.IsReceivingHistory = false;
 
-                                sensor.HistoricalLogs.Sort((a, b) => a.Time.CompareTo(b.Time));
+                                // Trasferiamo i log storici nel contenitore visuale
                                 foreach (var log in sensor.HistoricalLogs)
                                 {
-                                    sensor.DisplayLogs.Add(log.Message);
+                                    sensor.DisplayLogs.Add(log);
                                 }
                                 sensor.HistoricalLogs.Clear();
-                                sensor.DisplayLogs.Add("[SISTEMA] --- Storico decriptato completato ---");
+                                
+                                // AGGIORNATO: Inseriamo il messaggio di sistema differenziato per relay
+                                sensor.DisplayLogs.Add((DateTime.Now, $"[SISTEMA] --- Storico da [{relayName}] completato ---"));
+
+                                // RIO-ORDINIAMO TUTTO il blocco di messaggi in base all'orario in cui sono successi
+                                sensor.DisplayLogs.Sort((a, b) => a.Time.CompareTo(b.Time));
 
                                 while (sensor.DisplayLogs.Count > 100)
                                 {

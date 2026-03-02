@@ -15,15 +15,13 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-const numeroSensori = 2 // Facciamo finta di avere 2 sensori PM10 esterni
+const numeroSensori = 2
 
-// Struttura JSON per il dato in chiaro
 type DatiAria struct {
 	PM10 float64 `json:"pm10"`
 	Unit string  `json:"unit"`
 }
 
-// Generazione chiavi specifiche per i sensori PM10 (per non sovrascrivere quelle della temperatura)
 func getOrGenerateKeys(sensorName string) (string, string) {
 	_ = godotenv.Load(".env")
 
@@ -60,12 +58,11 @@ func simulaSensorePM10(idSensore int, privKey string, pubKey string, wg *sync.Wa
 	defer wg.Done()
 
 	sensorTagId := fmt.Sprintf("outdoor-pm10-%02d", idSensore)
-	durataValiditaDati := 24 * time.Hour // I dati scadono dopo 24 ore
+	durataValiditaDati := 24 * time.Hour
 
 	ctx := context.Background()
 
-	// Scriviamo sia su quello pubblico (Damus) che sul nostro (Raspberry)
-	relayURLs := []string{"wss://relay.damus.io", "ws://localhost:3334"}
+	relayURLs := []string{"wss://relay.damus.io", "wss://nos.lol"}
 	var activeRelays []*nostr.Relay
 
 	for _, url := range relayURLs {
@@ -74,8 +71,9 @@ func simulaSensorePM10(idSensore int, privKey string, pubKey string, wg *sync.Wa
 			log.Printf("⚠️ [%s] Impossibile connettersi a %s: %v", sensorTagId, url, err)
 			continue
 		}
-		activeRelays = append(activeRelays, relay)
+
 		fmt.Printf("📡 [%s] Connesso a %s!\n", sensorTagId, url)
+		activeRelays = append(activeRelays, relay)
 	}
 
 	defer func() {
@@ -85,32 +83,28 @@ func simulaSensorePM10(idSensore int, privKey string, pubKey string, wg *sync.Wa
 	}()
 
 	time.Sleep(time.Duration(rand.IntN(3)) * time.Second)
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Simuliamo valori di PM10 (tra 10 e 60 µg/m³)
 		valorePM10 := 10.0 + rand.Float64()*50.0
 
-		// Creiamo il JSON in chiaro
 		payload := DatiAria{
 			PM10: valorePM10,
 			Unit: "µg/m³",
 		}
 		messaggioInChiaro, _ := json.Marshal(payload)
 
-		// Calcolo scadenza (NIP-40)
 		expirationTime := time.Now().Add(durataValiditaDati).Unix()
 		expirationString := strconv.FormatInt(expirationTime, 10)
 
 		ev := nostr.Event{
 			PubKey:    pubKey,
 			CreatedAt: nostr.Now(),
-			// KIND 10000: Indica che è un dato generico, pubblico e in chiaro
-			Kind: 10000,
+			Kind:      1000,
 			Tags: nostr.Tags{
-				nostr.Tag{"t", "air_quality"}, // Tag tematico
-				nostr.Tag{"t", "pm10"},        // Tag specifico
+				nostr.Tag{"t", "air_quality"},
+				nostr.Tag{"t", "pm10"},
 				nostr.Tag{"sensor_id", sensorTagId},
 				nostr.Tag{"expiration", expirationString},
 			},
@@ -136,15 +130,12 @@ func simulaSensorePM10(idSensore int, privKey string, pubKey string, wg *sync.Wa
 				sensorTagId,
 				pubblicazioniRiuscite,
 				time.Unix(expirationTime, 0).Format("02/01 15:04"),
-				string(messaggioInChiaro)) // Stampiamo il JSON in chiaro per conferma
+				string(messaggioInChiaro))
 		}
 	}
 }
 
 func main() {
-	// A differenza del sensore temperatura, NON ci serve la Dashboard PubKey
-	// perché stiamo parlando a tutta la rete Nostr, non a una dashboard specifica!
-
 	fmt.Println("=====================================================")
 	fmt.Printf("🚀 AVVIO FLOTTA SENSORI PM10 (DATI PUBBLICI IN CHIARO - %d Sensori)\n", numeroSensori)
 	fmt.Println("=====================================================")
@@ -170,7 +161,6 @@ func main() {
 
 	for _, sensore := range identitaSensori {
 		wg.Add(1)
-		// Non passiamo più la dashboardPubKey
 		go simulaSensorePM10(sensore.ID, sensore.PrivKey, sensore.PubKey, &wg)
 	}
 

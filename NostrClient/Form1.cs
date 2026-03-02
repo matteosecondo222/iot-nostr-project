@@ -216,7 +216,7 @@ namespace NostrClient
             txtNewSensorKey!.Text = "";
             currentSelectedPubKey = newKey; 
 
-            string reqMessage = $@"[""REQ"", ""sub-{newKey}"", {{""authors"": [""{newKey}""], ""kinds"": [4, 10000]}}]";
+            string reqMessage = $@"[""REQ"", ""sub-{newKey}"", {{""authors"": [""{newKey}""], ""kinds"": [4, 1000]}}]";
             var bytes = Encoding.UTF8.GetBytes(reqMessage);
 
             foreach (var ws in activeWebSockets)
@@ -427,7 +427,7 @@ namespace NostrClient
                         scatter.Color = palette[colorIndex % palette.Length];
                         scatter.LineWidth = 2;
                         
-                        // AGGIORNAMENTO: Assicura che un singolo punto isolato (come per il Kind 10000) sia visibile!
+                        // AGGIORNAMENTO: Assicura che un singolo punto isolato (come per il Kind 1000) sia visibile!
                         scatter.MarkerSize = 7; 
                         
                         scatter.Label = sensor.SensorId; 
@@ -475,7 +475,7 @@ namespace NostrClient
                 
                 foreach (var pubKey in sensors.Keys)
                 {
-                    string reqMessage = $@"[""REQ"", ""sub-{pubKey}"", {{""authors"": [""{pubKey}""], ""kinds"": [4, 10000]}}]";
+                    string reqMessage = $@"[""REQ"", ""sub-{pubKey}"", {{""authors"": [""{pubKey}""], ""kinds"": [4, 1000]}}]";
                     var bytes = Encoding.UTF8.GetBytes(reqMessage);
                     await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
                 }
@@ -596,7 +596,7 @@ namespace NostrClient
                             content = DecryptNip04(rawContent, pubKey);
                             logIcon = "🔒";
                         }
-                        else if (kind == 10000)
+                        else if (kind == 1000)
                         {
                             content = rawContent;
                             logIcon = "🌍";

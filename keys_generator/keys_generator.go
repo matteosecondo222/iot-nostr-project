@@ -18,9 +18,9 @@ func main() {
 	}
 
 	fmt.Println("==================================================")
-	fmt.Println("🔑 CHIAVI PER LA TUA DASHBOARD C#")
+	fmt.Println("🔑 CHIAVI")
 	fmt.Println("==================================================")
-	fmt.Println("Private Key (da mettere in C#) :", privKey)
-	fmt.Println("Public Key  (da mettere in Go) :", pubKey)
+	fmt.Println("Private Key:", privKey)
+	fmt.Println("Public Key:", pubKey)
 	fmt.Println("==================================================")
 }

@@ -6,7 +6,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
-	"strconv" // IMPORTANTE: Aggiunto per convertire l'int64 in stringa
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,7 +17,6 @@ import (
 
 const numeroSensori = 3
 
-// ... (La funzione getOrGenerateKeys rimane invariata) ...
 func getOrGenerateKeys(sensorName string) (string, string) {
 	_ = godotenv.Load(".env")
 
@@ -37,7 +36,7 @@ func getOrGenerateKeys(sensorName string) (string, string) {
 		}
 		defer f.Close()
 
-		envContent := fmt.Sprintf("%s=%s\n%s=%s\n\n", privKeyVar, privKey, pubKeyVar, pubKey)
+		envContent := fmt.Sprintf("\n%s=%s\n%s=%s\n", privKeyVar, privKey, pubKeyVar, pubKey)
 		if _, err := f.WriteString(envContent); err != nil {
 			log.Fatalf("Errore nel salvataggio: %v", err)
 		}
@@ -54,12 +53,7 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 	defer wg.Done()
 
 	sensorTagId := fmt.Sprintf("sim-go-%02d", idSensore)
-
-	// ==========================================================
-	// ⚙️ CONFIGURAZIONE NIP-40 (Scadenza Dati)
-	// Definiamo quanto tempo i dati devono rimanere validi sui relay
-	// ==========================================================
-	durataValiditaDati := 24 * time.Hour // Esempio: i dati scadono dopo 24 ore
+	durataValiditaDati := 24 * time.Hour
 
 	sharedSecret, err := nip04.ComputeSharedSecret(dashboardPubKey, privKey)
 	if err != nil {
@@ -78,8 +72,9 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			log.Printf("⚠️ [%s] Impossibile connettersi a %s: %v", sensorTagId, url, err)
 			continue
 		}
-		activeRelays = append(activeRelays, relay)
+
 		fmt.Printf("📡 [%s] Connesso a %s!\n", sensorTagId, url)
+		activeRelays = append(activeRelays, relay)
 	}
 
 	defer func() {
@@ -102,9 +97,6 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			continue
 		}
 
-		// ==========================================================
-		// ⏰ CALCOLO TIMESTAMP DI SCADENZA (NIP-40)
-		// ==========================================================
 		expirationTime := time.Now().Add(durataValiditaDati).Unix()
 		expirationString := strconv.FormatInt(expirationTime, 10)
 
@@ -116,8 +108,7 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 				nostr.Tag{"p", dashboardPubKey},
 				nostr.Tag{"t", "temperatura"},
 				nostr.Tag{"sensor_id", sensorTagId},
-				// Aggiungiamo il tag di scadenza richiesto dal protocollo
-				nostr.Tag{"expiration", expirationString}, 
+				nostr.Tag{"expiration", expirationString},
 			},
 			Content: messaggioCriptato,
 		}
@@ -126,7 +117,6 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			continue
 		}
 
-		// Variabile per tenere traccia dei log puliti
 		pubblicazioniRiuscite := 0
 
 		for _, r := range activeRelays {
@@ -136,18 +126,17 @@ func simulaSensore(idSensore int, privKey string, pubKey string, dashboardPubKey
 			}
 			pubblicazioniRiuscite++
 		}
-		
+
 		if pubblicazioniRiuscite > 0 {
-			fmt.Printf("🔒 [%s] Criptato e Pubblicato su %d relay (Scade il: %s) --> %.2f °C\n", 
-				sensorTagId, 
+			fmt.Printf("🔒 [%s] Criptato e Pubblicato su %d relay (Scade il: %s) --> %.2f °C\n",
+				sensorTagId,
 				pubblicazioniRiuscite,
-				time.Unix(expirationTime, 0).Format("02/01 15:04"), // Formatto per comodità di lettura nei log
+				time.Unix(expirationTime, 0).Format("02/01 15:04"),
 				temperatura)
 		}
 	}
 }
 
-// ... (La funzione main rimane invariata) ...
 func main() {
 	_ = godotenv.Load(".env")
 

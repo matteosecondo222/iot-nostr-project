@@ -5,23 +5,48 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/fiatjaf/eventstore/badger"
 	"github.com/fiatjaf/khatru"
+	"github.com/joho/godotenv"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 // =================================================================
 // ⚙️ CONFIGURAZIONE GARBAGE COLLECTOR
-// Il tempo di scadenza effettivo è deciso dal sensore (tag expiration).
-// Qui puoi decidere OGNI QUANTO TEMPO il relay si sveglia per
-// scansionare il database e cancellare fisicamente i file scaduti.
 // =================================================================
-const IntervalloDiPulizia = 1 * time.Hour // Esegue il controllo ogni ora
+const IntervalloDiPulizia = 1 * time.Hour
 
 func main() {
+	_ = godotenv.Load(".env")
+
+	TEMP_SENSOR_1_PUB_KEY := os.Getenv("TEMP_SENSOR_1_PUB_KEY")
+	TEMP_SENSOR_2_PUB_KEY := os.Getenv("TEMP_SENSOR_2_PUB_KEY")
+	TEMP_SENSOR_3_PUB_KEY := os.Getenv("TEMP_SENSOR_3_PUB_KEY")
+	PM10_SENSOR_1_PUB_KEY := os.Getenv("PM10_SENSOR_1_PUB_KEY")
+	PM10_SENSOR_2_PUB_KEY := os.Getenv("PM10_SENSOR_2_PUB_KEY")
+
+	// =================================================================
+	// 📋 WHITELIST
+	// =================================================================
+	whitelist := map[string]bool{
+		TEMP_SENSOR_1_PUB_KEY: true,
+		TEMP_SENSOR_2_PUB_KEY: true,
+		TEMP_SENSOR_3_PUB_KEY: true,
+		PM10_SENSOR_1_PUB_KEY: true,
+		PM10_SENSOR_2_PUB_KEY: true,
+	}
+
+	fmt.Println("Chiavi autorizzate in Whitelist:")
+	for k := range whitelist {
+		if k != "" {
+			fmt.Printf("- %s\n", k[:8])
+		}
+	}
+
 	db := badger.BadgerBackend{Path: "./relay_db"}
 	if err := db.Init(); err != nil {
 		log.Fatalf("Impossibile inizializzare il database: %v", err)
@@ -29,27 +54,34 @@ func main() {
 	fmt.Println("[SISTEMA] Database avviato con successo.")
 
 	relay := khatru.NewRelay()
-	relay.Info.Name = "Il Mio Hub IoT Privato (NIP-40 Ready)"
-	relay.Info.Description = "Relay che supporta la scadenza fisica degli eventi."
+	relay.Info.Name = "Il Mio Hub IoT Privato (Whitelist Ready)"
+	relay.Info.Description = "Relay blindato basato sulla firma crittografica dell'evento."
 	relay.Info.Software = "khatru"
 
 	// =================================================================
-	// 🛑 NIP-40: 1. Rifiuto eventi già scaduti in fase di pubblicazione
+	// 🛡️ FILTRO IN INGRESSO (Blocco scrittura per chi non è in Whitelist)
 	// =================================================================
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
+
+		// 1. Controllo Whitelist basato sulla PubKey dell'evento.
+		// NOTA: khatru ha già verificato matematicamente la firma dell'evento in background.
+		// Se siamo qui, significa che l'evento è stato realmente generato dal possessore di questa PubKey.
+		if !whitelist[event.PubKey] {
+			fmt.Printf("[SECURITY] Bloccato tentativo di scrittura da pubkey non autorizzata: %s\n", event.PubKey[:8])
+			return true, "restricted: la tua pubkey non e' autorizzata a scrivere su questo hub"
+		}
+
+		// 2. Controllo eventi già scaduti in fase di pubblicazione (NIP-40)
 		if isEventExpired(event) {
 			return true, "reject: event is already expired (NIP-40)"
 		}
+
 		return false, ""
 	})
 
-	// Salvataggio standard e Cancellazione standard
 	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
 	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 
-	// =================================================================
-	// 🕵️‍♂️ NIP-40: 2. Filtro in uscita (Nascondiamo i vecchi dati ai client)
-	// =================================================================
 	relay.QueryEvents = append(relay.QueryEvents, func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 		dbChannel, err := db.QueryEvents(ctx, filter)
 		if err != nil {
@@ -62,7 +94,7 @@ func main() {
 			defer close(filteredChannel)
 			for event := range dbChannel {
 				if !isEventExpired(event) {
-					filteredChannel <- event 
+					filteredChannel <- event
 				}
 			}
 		}()
@@ -74,9 +106,6 @@ func main() {
 		fmt.Printf("-> Salvato evento %s dal sensore %s\n", event.ID[:8], event.PubKey[:8])
 	})
 
-	// =================================================================
-	// 🚀 AVVIO DEL GARBAGE COLLECTOR IN BACKGROUND
-	// =================================================================
 	go startExpirationGC(&db)
 
 	port := ":3334"
@@ -88,21 +117,16 @@ func main() {
 	}
 }
 
-// =================================================================
-// 🧹 GARBAGE COLLECTOR: Elimina fisicamente i messaggi scaduti
-// =================================================================
 func startExpirationGC(db *badger.BadgerBackend) {
 	ticker := time.NewTicker(IntervalloDiPulizia)
 	defer ticker.Stop()
 
 	for {
-		<-ticker.C // Attende il prossimo intervallo (es. 1 ora)
-		
+		<-ticker.C
+
 		fmt.Println("[GC] Avvio scansione per eliminazione fisica messaggi scaduti (NIP-40)...")
 		ctx := context.Background()
-		
-		// Passando un filtro vuoto, chiediamo a BadgerDB di scorrere gli eventi.
-		// (Essendo un database key-value, l'iterazione è molto veloce).
+
 		ch, err := db.QueryEvents(ctx, nostr.Filter{})
 		if err != nil {
 			log.Printf("[ERRORE GC] Impossibile interrogare il db: %v\n", err)
@@ -110,10 +134,8 @@ func startExpirationGC(db *badger.BadgerBackend) {
 		}
 
 		eliminati := 0
-		// Analizziamo ogni evento presente nel database
 		for event := range ch {
 			if isEventExpired(event) {
-				// Se è scaduto, lo eliminiamo FISICAMENTE dal disco
 				err := db.DeleteEvent(ctx, event)
 				if err == nil {
 					eliminati++
@@ -129,9 +151,6 @@ func startExpirationGC(db *badger.BadgerBackend) {
 	}
 }
 
-// =================================================================
-// 🛠 HELPER NIP-40: Funzione che controlla se un evento è scaduto
-// =================================================================
 func isEventExpired(event *nostr.Event) bool {
 	for _, tag := range event.Tags {
 		if len(tag) >= 2 && tag[0] == "expiration" {
@@ -143,5 +162,5 @@ func isEventExpired(event *nostr.Event) bool {
 			}
 		}
 	}
-	return false 
+	return false
 }
